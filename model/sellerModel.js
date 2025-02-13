@@ -18,6 +18,11 @@ const sellerSchema = new mongoose.Schema(
       data: Buffer,
       contentType: String,
     },
+    isVerified: {
+      type: Boolean,
+      default: false,
+      select: false,
+    },
   },
   {
     collection: "sellerAccountRegistrations",

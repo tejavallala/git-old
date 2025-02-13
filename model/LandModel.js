@@ -2,37 +2,34 @@ const mongoose = require("mongoose");
 
 const landSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, trim: true }, // Seller name
+    userId: { type: String, required: true },
+    name: { type: String, required: true, trim: true },
     phoneNumber: { type: String, trim: true },
-    location: { type: String, trim: true }, // Fixed typo from "locatin"
+    email: { type: String, trim: true },
+    walletAddress: { type: String, trim: true },
+    location: { type: String, trim: true },
     price: { type: Number, required: true },
     surveyNumber: { type: String, required: true },
-    area: { type: Number, required: true }, // in sqft
-    isApproved: { type: Boolean, default: false }, // Approval status
-    approvedBy: { type: String, trim: true }, // Admin ID or email
-    approvalDate: { type: Date },
-    owner: { type: String, required: true, trim: true }, // Ethereum address
-    coordinates: {
-      latitude: { type: Number },
-      longitude: { type: Number },
+    area: { type: Number, required: true },
+    isApproved: { type: Boolean, default: false },
+    verificationStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'pending'
     },
-    landImages: [
-      {
-        data: Buffer,
-        contentType: String,
-      },
-    ],
-    history: [
-      {
-        date: { type: Date, default: Date.now },
-        action: { type: String, enum: ["Created", "Approved", "Transferred"] },
-        performedBy: { type: String }, // Admin or User ID
-      },
-    ],
+    verifiedBy: {
+      inspectorId: { type: String },
+      timestamp: { type: Date }
+    },
+    verificationComments: { type: String },
+    landImages: [{
+      data: Buffer,
+      contentType: String
+    }]
   },
   {
     collection: "land",
-    timestamps: true, 
+    timestamps: true,
   }
 );
 

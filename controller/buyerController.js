@@ -36,6 +36,7 @@ buyerRoute.post(
         phoneNumber,
         location,
         governmentId,
+        isVerified: false, // Set default verification status
         governmentIdImage: {
           data: req.file.buffer,
           contentType: req.file.mimetype,
@@ -81,7 +82,9 @@ buyerRoute.get("/", async (req, res) => {
 // Get a buyer by ID
 buyerRoute.get("/get-user/:id", async (req, res) => {
   try {
-    const buyer = await buyerModel.findById(req.params.id);
+    const buyer = await buyerModel
+      .findById(req.params.id)
+      .select("+isVerified");
 
     // Check if buyer exists
     if (!buyer) {
@@ -99,7 +102,10 @@ buyerRoute.get("/get-user/:id", async (req, res) => {
       buyerObj.governmentIdImage = null;
     }
 
-    res.status(200).json(buyerObj);
+    res.status(200).json({
+      ...buyerObj,
+      isVerified: buyerObj.isVerified || false,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Internal server error" });
@@ -112,16 +118,40 @@ buyerRoute.post("/login", async (req, res) => {
 
   try {
     // Find the buyer by email and password
-    const buyer = await buyerModel.findOne({ email, password });
+    const buyer = await buyerModel
+      .findOne({ email, password })
+      .select("+isVerified");
 
     if (buyer) {
       res.status(200).json({
         message: "Login successful",
         userId: buyer._id, // Send userId in the response
+        isVerified: buyer.isVerified || false,
       });
     } else {
       res.status(401).json({ message: "Invalid email or password" });
     }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Add verification status endpoint
+buyerRoute.get("/verification-status/:id", async (req, res) => {
+  try {
+    const buyer = await buyerModel
+      .findById(req.params.id)
+      .select("+isVerified");
+    if (!buyer) {
+      return res.status(404).json({ message: "Buyer not found" });
+    }
+    res.status(200).json({
+      isVerified: buyer.isVerified || false,
+      message: buyer.isVerified
+        ? "Your account is verified"
+        : "Your account is pending verification",
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Internal server error" });
