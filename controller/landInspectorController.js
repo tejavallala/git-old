@@ -4,6 +4,8 @@ const sellerModel = require('../model/sellerModel');
 const buyerModel = require('../model/buyerModel');
 const LandInspector = require('../model/landInspectorModel'); // Fixed import
 const bcrypt = require('bcrypt'); // Add this import
+const BuyRequest = require('../model/BuyRequestModel');
+const Land = require('../model/LandModel');
 
 // Get unverified users (either sellers or buyers)
 inspectorRoute.get('/unverified-users/:userType', async (req, res) => {
@@ -61,74 +63,6 @@ inspectorRoute.post('/verify-user', async (req, res) => {
   }
 });
 
-// Create Land Inspector/Admin
-inspectorRoute.post("/create-user", async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: "All fields are required" });
-    }
-
-    // Check if admin already exists with this email
-    const existingAdmin = await LandInspector.findOne({ email });
-    if (existingAdmin) {
-      return res.status(400).json({ message: "Email already registered" });
-    }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const newAdmin = new LandInspector({
-      name,
-      email,
-      password: hashedPassword
-    });
-
-    const savedAdmin = await newAdmin.save();
-    res.status(201).json({
-      message: "Admin created successfully",
-      admin: {
-        id: savedAdmin._id,
-        name: savedAdmin.name,
-        email: savedAdmin.email
-      }
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-});
-
-// Add login endpoint
-inspectorRoute.post("/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" });
-    }
-
-    const admin = await LandInspector.findOne({ email });
-    if (!admin) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, admin.password);
-    if (!isPasswordValid) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    res.json({
-      message: "Login successful",
-      userId: admin._id
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-});
-
 // Add this new endpoint after your existing endpoints
 inspectorRoute.get('/all-users/:userType', async (req, res) => {
   try {
@@ -160,6 +94,106 @@ inspectorRoute.get('/all-users/:userType', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching all users:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Get all pending purchase requests
+inspectorRoute.get('/pending-purchases', async (req, res) => {
+  try {
+    const pendingRequests = await BuyRequest.find({ status: 'pending' })
+      .populate('landId')
+      .populate('buyerId', 'name email phoneNumber')  // Added phoneNumber
+      .populate('sellerId', 'name email phoneNumber') // Added phoneNumber
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const requestsWithFormattedData = pendingRequests.map(request => ({
+      ...request,
+      landId: {
+        ...request.landId,
+        landImages: request.landId.landImages.map(img => ({
+          ...img,
+          data: img.data.toString('base64')
+        }))
+      }
+    }));
+
+    res.json(requestsWithFormattedData);
+  } catch (error) {
+    console.error('Error fetching pending purchase requests:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Verify purchase request
+inspectorRoute.post('/verify-purchase/:requestId', async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const { status, comments, inspectorId } = req.body;
+
+    // Update buy request status
+    const buyRequest = await BuyRequest.findByIdAndUpdate(
+      requestId,
+      {
+        status,
+        inspectorComments: comments,
+        'verifiedBy.inspectorId': inspectorId,
+        'verifiedBy.timestamp': new Date()
+      },
+      { new: true }
+    ).populate('landId');
+
+    if (!buyRequest) {
+      return res.status(404).json({ message: 'Purchase request not found' });
+    }
+
+    // If approved, update land ownership
+    if (status === 'approved') {
+      await Land.findByIdAndUpdate(buyRequest.landId._id, {
+        status: 'pending_payment',
+        currentBuyRequest: buyRequest._id
+      });
+    }
+
+    res.json({
+      message: `Purchase request ${status} successfully`,
+      buyRequest
+    });
+  } catch (error) {
+    console.error('Error verifying purchase request:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Get purchase request history
+inspectorRoute.get('/purchase-history', async (req, res) => {
+  try {
+    const requests = await BuyRequest.find({})
+      .populate('landId')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const requestsWithFormattedImages = requests.map(request => ({
+      ...request,
+      landId: {
+        ...request.landId,
+        landImages: request.landId.landImages.map(img => ({
+          ...img,
+          data: img.data.toString('base64')
+        }))
+      }
+    }));
+
+    res.json({
+      total: requestsWithFormattedImages.length,
+      approved: requestsWithFormattedImages.filter(r => r.status === 'approved').length,
+      rejected: requestsWithFormattedImages.filter(r => r.status === 'rejected').length,
+      pending: requestsWithFormattedImages.filter(r => r.status === 'pending').length,
+      requests: requestsWithFormattedImages
+    });
+  } catch (error) {
+    console.error('Error fetching purchase history:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

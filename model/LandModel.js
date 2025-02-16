@@ -14,18 +14,30 @@ const landSchema = new mongoose.Schema(
     isApproved: { type: Boolean, default: false },
     verificationStatus: {
       type: String,
-      enum: ['pending', 'approved', 'rejected'],
-      default: 'pending'
+      enum: ["pending", "approved", "rejected"],
+      default: "pending",
     },
     verifiedBy: {
       inspectorId: { type: String },
-      timestamp: { type: Date }
+      timestamp: { type: Date },
     },
     verificationComments: { type: String },
-    landImages: [{
-      data: Buffer,
-      contentType: String
-    }]
+    landImages: [
+      {
+        data: Buffer,
+        contentType: String,
+      },
+    ],
+    status: {
+      type: String,
+      enum: ["available", "pending_payment", "sold"],
+      default: "available",
+    },
+    currentBuyRequest: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "BuyRequest",
+      default: null,
+    },
   },
   {
     collection: "land",
