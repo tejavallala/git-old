@@ -2,7 +2,11 @@ const mongoose = require("mongoose");
 
 const landSchema = new mongoose.Schema(
   {
-    userId: { type: String, required: true },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'seller', 
+      required: true
+    },
     name: { type: String, required: true, trim: true },
     phoneNumber: { type: String, trim: true },
     email: { type: String, trim: true },
@@ -30,8 +34,26 @@ const landSchema = new mongoose.Schema(
     ],
     status: {
       type: String,
-      enum: ["available", "pending_payment", "sold"],
+      enum: ["available", "sold", "transferred"],
       default: "available",
+    },
+    currentOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'buyer',
+      default: null
+    },
+    previousOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'seller',
+      default: null
+    },
+    lastTransactionDate: {
+      type: Date,
+      default: null
+    },
+    lastTransactionHash: {
+      type: String,
+      default: null
     },
     currentBuyRequest: {
       type: mongoose.Schema.Types.ObjectId,

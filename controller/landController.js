@@ -4,6 +4,10 @@ const mongoose = require("mongoose");
 const Land = require("../model/LandModel");
 const BuyRequest = require("../model/BuyRequestModel");
 const Payment = require("../model/PaymentModel");
+const Buyer = require('../model/buyerModel');
+const TransferRequest = require('../model/TransferRequestModel');
+const Seller = require('../model/sellerModel');
+
 // const nodemailer = require("nodemailer");  // Email service commented
 const landRoute = express.Router();
 
@@ -51,11 +55,7 @@ landRoute.post(
         userId, // Make sure this is included in the form data
       } = req.body;
 
-      console.log("Received land data:", {
-        email,
-        location,
-        surveyNumber,
-      }); // Debug log
+      
 
       if (!req.files || req.files.length === 0) {
         return res
@@ -209,25 +209,25 @@ landRoute.post("/verify-land/:id", async (req, res) => {
 landRoute.get("/user-lands/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+    const lands = await Land.find({ userId })
+      .populate('currentOwner', 'name email')
+      .populate('previousOwner', 'name email')
+      .sort({ createdAt: -1 })
+      .lean();
 
-    const lands = await Land.find({ userId }).sort({ createdAt: -1 }).lean(); // Convert to plain JavaScript objects
-
-    // Convert Buffer to Base64 string for each land's images
-    const landsWithImages = lands.map((land) => ({
+    // Transform image data to base64
+    const landsWithFormattedImages = lands.map(land => ({
       ...land,
-      landImages: land.landImages.map((img) => ({
-        ...img,
-        data: img.data.toString("base64"),
-      })),
+      landImages: land.landImages?.map(image => ({
+        ...image,
+        data: image.data.toString('base64')
+      }))
     }));
 
-    res.status(200).json(landsWithImages);
+    res.json(landsWithFormattedImages);
   } catch (error) {
-    console.error("Error fetching lands:", error);
-    res.status(500).json({
-      message: "Failed to fetch lands",
-      error: error.message,
-    });
+    console.error('Error fetching user lands:', error);
+    res.status(500).json({ message: 'Failed to fetch lands' });
   }
 });
 
@@ -248,7 +248,7 @@ landRoute.get("/user-lands", async (req, res) => {
       $and: [{ userId: userId }, { email: email }],
     }).sort({ createdAt: -1 });
 
-    console.log("Found lands:", lands.length); // Debug log
+     // Debug log
 
     res.status(200).json(lands);
   } catch (error) {
@@ -500,34 +500,26 @@ landRoute.get("/buyer-transactions/:buyerId", async (req, res) => {
 landRoute.get("/pending-payments/:buyerId", async (req, res) => {
   try {
     const { buyerId } = req.params;
+    console.log('Fetching payments for buyer:', buyerId);
+
     const pendingPayments = await BuyRequest.find({
       buyerId,
-      status: "approved",
-      paymentStatus: { $ne: "completed" },
+      status: 'approved',
+      paymentStatus: { $ne: 'completed' }
     })
-      .populate("landId")
-      .populate("sellerId", "name walletAddress")
-      .sort({ createdAt: -1 });
-
-    console.log("Found pending payments:", pendingPayments.length);
-    res.json(pendingPayments);
-  } catch (error) {
-    console.error("Error fetching pending payments:", error);
-    res.status(500).json({ message: "Failed to fetch pending payments" });
-  }
-});
-
-landRoute.get("/pending-payments/:buyerId", async (req, res) => {
-  try {
-    const { buyerId } = req.params;
-    const pendingPayments = await BuyRequest.find({
-      buyerId,
-      status: { $in: ["approved", "pending_payment"] },
-      paymentStatus: { $ne: "completed" },
+    .populate({
+      path: 'landId',
+      populate: {
+        path: 'userId',
+        model: 'seller',
+        select: 'name email phoneNumber walletAddress'
+      }
     })
-      .populate("landId")
-      .populate("sellerId", "name walletAddress");
+    .populate('sellerId', 'name email phoneNumber walletAddress')
+    .lean();
 
+    // Debug log
+    console.log('Populated pending payments:', JSON.stringify(pendingPayments, null, 2));
     res.json(pendingPayments);
   } catch (error) {
     console.error("Error fetching pending payments:", error);
@@ -553,6 +545,238 @@ landRoute.get("/user-transactions/:userId", async (req, res) => {
   } catch (error) {
     console.error("Error fetching user transactions:", error);
     res.status(500).json({ message: "Failed to fetch transactions" });
+  }
+});
+landRoute.get("/user/:userId", async (req, res) => {
+  try {
+    // Try to find user in Buyer collection first
+    let user = await Buyer.findById(req.params.userId)
+      .select('-password -governmentIdImage')
+      .lean();
+
+    // If not found in Buyer, try Seller collection
+    if (!user) {
+      user = await Seller.findById(req.params.userId)
+        .select('-password -governmentIdImage')
+        .lean();
+    }
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json(user);
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    res.status(500).json({ message: "Failed to fetch user details" });
+  }
+});
+
+// Request land transfer
+landRoute.post("/request-transfer", async (req, res) => {
+  try {
+    const { landId, sellerId, buyerId, transactionHash, paymentId } = req.body;
+    
+    const transferRequest = new TransferRequest({
+      landId,
+      sellerId,
+      buyerId,
+      transactionHash,
+      paymentId,
+      status: 'pending'
+    });
+
+    await transferRequest.save();
+    res.status(200).json({ message: 'Transfer request created successfully' });
+  } catch (error) {
+    console.error('Error creating transfer request:', error);
+    res.status(500).json({ message: 'Failed to create transfer request' });
+  }
+});
+
+// Get all transfer requests
+landRoute.get("/transfer-requests", async (req, res) => {
+  try {
+    const requests = await TransferRequest.find({ status: 'pending' })
+      .populate('landId')
+      .populate('sellerId')
+      .populate('buyerId')
+      .lean();
+    
+    res.json(requests);
+  } catch (error) {
+    console.error('Error fetching transfer requests:', error);
+    res.status(500).json({ message: 'Failed to fetch transfer requests' });
+  }
+});
+
+// Process transfer request
+landRoute.post("/process-transfer/:requestId", async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const { action, sellerPhoto, buyerPhoto, verificationDate, comments } = req.body;
+
+    // Convert base64 photos to buffer
+    const sellerPhotoBuffer = sellerPhoto ? Buffer.from(
+      sellerPhoto.replace(/^data:image\/\w+;base64,/, ''),
+      'base64'
+    ) : null;
+    
+    const buyerPhotoBuffer = buyerPhoto ? Buffer.from(
+      buyerPhoto.replace(/^data:image\/\w+;base64,/, ''),
+      'base64'
+    ) : null;
+
+    const transferRequest = await TransferRequest.findById(requestId)
+      .populate('landId')
+      .populate('buyerId')
+      .populate('sellerId');
+
+    if (!transferRequest) {
+      return res.status(404).json({ message: 'Transfer request not found' });
+    }
+
+    // Update transfer request
+    transferRequest.status = action === 'approve' ? 'completed' : 'rejected';
+    transferRequest.verificationDate = verificationDate;
+    transferRequest.verificationComments = comments;
+
+    if (sellerPhotoBuffer) {
+      transferRequest.sellerVerificationPhoto = {
+        data: sellerPhotoBuffer,
+        contentType: 'image/jpeg',
+        capturedAt: verificationDate
+      };
+    }
+
+    if (buyerPhotoBuffer) {
+      transferRequest.buyerVerificationPhoto = {
+        data: buyerPhotoBuffer,
+        contentType: 'image/jpeg',
+        capturedAt: verificationDate
+      };
+    }
+
+    await transferRequest.save();
+
+    // If approved, update land ownership
+    if (action === 'approve') {
+      await Land.findByIdAndUpdate(
+        transferRequest.landId._id,
+        {
+          currentOwner: transferRequest.buyerId._id,
+          previousOwner: transferRequest.sellerId._id,
+          status: 'transferred',
+          lastTransactionDate: verificationDate,
+          lastTransactionHash: transferRequest.transactionHash
+        }
+      );
+    }
+
+    res.json({ 
+      message: `Transfer ${action}d successfully`,
+      transferRequest
+    });
+  } catch (error) {
+    console.error('Error processing transfer:', error);
+    res.status(500).json({ 
+      message: 'Failed to process transfer',
+      error: error.message 
+    });
+  }
+});
+
+// Add this new route
+landRoute.get("/owned-lands/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const ownedLands = await Land.find({
+      currentOwner: userId,
+      status: 'transferred'
+    })
+    .populate('userId', 'name email phoneNumber')  // Original seller/owner
+    .populate('currentOwner', 'name email phoneNumber')  // Current owner (buyer)
+    .populate('previousOwner', 'name email phoneNumber') // Previous owner
+    
+    .lean();
+
+    // Debug log
+    
+
+    res.json(ownedLands);
+  } catch (error) {
+    console.error("Error fetching owned lands:", error);
+    res.status(500).json({ message: "Failed to fetch owned lands" });
+  }
+});
+
+// Add this new route to get transfer statuses
+landRoute.get("/transfer-statuses", async (req, res) => {
+  try {
+    const transfers = await TransferRequest.find()
+      .select('paymentId status')
+      .lean();
+    
+    res.json(transfers);
+  } catch (error) {
+    console.error("Error fetching transfer statuses:", error);
+    res.status(500).json({ message: "Failed to fetch transfer statuses" });
+  }
+});
+// Add this to your landController.js
+landRoute.get("/pending-counts", async (req, res) => {
+  try {
+    const [pendingLands, pendingUsers, pendingPurchases, pendingTransfers] = await Promise.all([
+      Land.countDocuments({ verificationStatus: "pending" }),
+      Buyer.countDocuments({ isVerified: false }),
+      BuyRequest.countDocuments({ status: "pending" }),
+      TransferRequest.countDocuments({ status: "pending" })
+    ]);
+
+    res.json({
+      pendingLands,
+      pendingUsers,
+      pendingPurchases,
+      pendingTransfers
+    });
+  } catch (error) {
+    console.error("Error fetching pending counts:", error);
+    res.status(500).json({ message: "Failed to fetch pending counts" });
+  }
+});
+
+// Add this route to get completed transfers
+landRoute.get("/completed-transfers", async (req, res) => {
+  try {
+    const completedTransfers = await TransferRequest.find({ 
+      status: 'completed',
+      sellerVerificationPhoto: { $exists: true },
+      buyerVerificationPhoto: { $exists: true }
+    })
+    .populate('landId')
+    .populate('sellerId', 'name email phoneNumber')
+    .populate('buyerId', 'name email phoneNumber')
+    .sort({ verificationDate: -1 })
+    .lean();
+
+    // Convert Buffer to Base64 for photos
+    const transfersWithPhotos = completedTransfers.map(transfer => ({
+      ...transfer,
+      sellerVerificationPhoto: transfer.sellerVerificationPhoto ? {
+        ...transfer.sellerVerificationPhoto,
+        data: transfer.sellerVerificationPhoto.data.toString('base64')
+      } : null,
+      buyerVerificationPhoto: transfer.buyerVerificationPhoto ? {
+        ...transfer.buyerVerificationPhoto,
+        data: transfer.buyerVerificationPhoto.data.toString('base64')
+      } : null
+    }));
+
+    res.json(transfersWithPhotos);
+  } catch (error) {
+    console.error('Error fetching completed transfers:', error);
+    res.status(500).json({ message: 'Failed to fetch completed transfers' });
   }
 });
 
