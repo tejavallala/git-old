@@ -30,10 +30,34 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       required: true
     },
+    paymentType: {
+      type: String,
+      enum: ['direct', 'escrow'],
+      required: true
+    },
     status: {
       type: String,
-      enum: ['pending', 'completed', 'failed'],
+      enum: ['pending', 'inEscrow', 'releasedToSeller', 'completed', 'failed'],
       default: 'pending'
+    },
+    escrowDetails: {
+      receivedByInspector: {
+        status: {
+          type: Boolean,
+          default: false
+        },
+        transactionHash: String,
+        timestamp: Date
+      },
+      releasedToSeller: {
+        status: {
+          type: Boolean,
+          default: false
+        },
+        transactionHash: String,
+        timestamp: Date,
+        inspectorAddress: String
+      }
     },
     paymentDate: {
       type: Date,
@@ -44,5 +68,9 @@ const paymentSchema = new mongoose.Schema(
     timestamps: true
   }
 );
+
+// Add index for faster queries
+paymentSchema.index({ paymentType: 1, status: 1 });
+paymentSchema.index({ 'escrowDetails.receivedByInspector.status': 1 });
 
 module.exports = mongoose.model("Payment", paymentSchema);

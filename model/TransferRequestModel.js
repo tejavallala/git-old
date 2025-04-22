@@ -44,8 +44,47 @@ const transferRequestSchema = new mongoose.Schema({
     contentType: String,
     capturedAt: Date
   },
+  documentHash: {
+    type: String,
+    sparse: true
+  },
+  transferCertificate: {
+    data: Buffer,
+    contentType: String,
+    generatedAt: Date
+  },
+  verificationDetails: {
+    date: Date,
+    inspectorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'inspector'
+    },
+    sellerPhoto: {
+      data: Buffer,
+      contentType: String,
+      capturedAt: Date
+    },
+    buyerPhoto: {
+      data: Buffer,
+      contentType: String,
+      capturedAt: Date
+    }
+  },
+  transferStatus: {
+    type: String,
+    enum: ['pending', 'completed', 'rejected'],
+    default: 'pending'
+  },
+  completedAt: {
+    type: Date,
+    sparse: true
+  }
 }, {
   timestamps: true
 });
+
+// Add index for faster queries
+transferRequestSchema.index({ documentHash: 1 });
+transferRequestSchema.index({ 'verificationDetails.date': 1 });
 
 module.exports = mongoose.model('TransferRequest', transferRequestSchema);

@@ -7,6 +7,7 @@ const Payment = require("../model/PaymentModel");
 const Buyer = require('../model/buyerModel');
 const TransferRequest = require('../model/TransferRequestModel');
 const Seller = require('../model/sellerModel');
+const CryptoJS = require("crypto-js"); // Added for hashing
 
 // const nodemailer = require("nodemailer");  // Email service commented
 const landRoute = express.Router();
@@ -530,23 +531,39 @@ landRoute.get("/pending-payments/:buyerId", async (req, res) => {
 // Add this route to get user transactions
 landRoute.get("/user-transactions/:userId", async (req, res) => {
   try {
-    const { userId } = req.params;
-
     const transactions = await Payment.find({
-      $or: [{ buyerId: userId }, { sellerId: userId }],
-      status: "completed",
+      $or: [
+        { buyerId: req.params.userId },
+        { sellerId: req.params.userId }
+      ]
     })
-      .populate("landId")
-      .populate("buyerId", "name email")
-      .populate("sellerId", "name email")
-      .sort({ paymentDate: -1 });
+    .populate('landId')
+    .populate('buyerId', 'name email walletAddress')
+    .populate('sellerId', 'name email walletAddress')
+    .sort('-paymentDate');
 
-    res.json(transactions);
+    // Enhance transactions with escrow details
+    const enhancedTransactions = transactions.map(transaction => {
+      if (transaction.paymentType === 'escrow') {
+        return {
+          ...transaction._doc,
+          status: transaction.status,
+          escrowDetails: {
+            receivedByInspector: transaction.escrowDetails?.receivedByInspector || {},
+            releasedToSeller: transaction.escrowDetails?.releasedToSeller || {}
+          }
+        };
+      }
+      return transaction;
+    });
+
+    res.json(enhancedTransactions);
   } catch (error) {
-    console.error("Error fetching user transactions:", error);
-    res.status(500).json({ message: "Failed to fetch transactions" });
+    console.error("Error fetching transactions:", error);
+    res.status(500).json({ message: "Error fetching transactions" });
   }
 });
+
 landRoute.get("/user/:userId", async (req, res) => {
   try {
     // Try to find user in Buyer collection first
@@ -779,5 +796,520 @@ landRoute.get("/completed-transfers", async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch completed transfers' });
   }
 });
+
+// Dashboard Statistics API
+landRoute.get("/dashboard-statistics", async (req, res) => {
+  try {
+    // Get total counts
+    const [totalUsers, totalLands, totalTransactions] = await Promise.all([
+      Promise.all([
+        Buyer.countDocuments(),
+        Seller.countDocuments()
+      ]).then(counts => counts.reduce((a, b) => a + b, 0)),
+      Land.countDocuments(),
+      Payment.countDocuments()
+    ]);
+
+    // Calculate total land value
+    const totalValue = await Land.aggregate([
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$price" }
+        }
+      }
+    ]);
+
+    // Get verification rate
+    const [totalVerifications, completedVerifications] = await Promise.all([
+      Land.countDocuments({ verificationStatus: { $ne: null } }),
+      Land.countDocuments({ verificationStatus: "approved" })
+    ]);
+    const verificationRate = totalVerifications ? 
+      Math.round((completedVerifications / totalVerifications) * 100) : 0;
+
+    // Get recent transactions
+    const recentTransactions = await Payment.find()
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .populate('landId', 'location surveyNumber')
+      .populate('buyerId', 'name')
+      .populate('sellerId', 'name')
+      .lean();
+
+    // Format transactions for frontend
+    const formattedTransactions = recentTransactions.map(tx => ({
+      id: tx._id,
+      type: 'Land Purchase',
+      amount: tx.amount,
+      status: tx.status,
+      buyerName: tx.buyerId?.name || 'Unknown',
+      sellerName: tx.sellerId?.name || 'Unknown',
+      landLocation: tx.landId?.location || 'Unknown',
+      date: tx.createdAt
+    }));
+
+    // Get monthly statistics
+    const monthlyStats = await Payment.aggregate([
+      {
+        $group: {
+          _id: {
+            month: { $month: "$createdAt" },
+            year: { $year: "$createdAt" }
+          },
+          totalTransactions: { $sum: 1 },
+          totalValue: { $sum: "$amount" }
+        }
+      },
+      { $sort: { "_id.year": -1, "_id.month": -1 } },
+      { $limit: 12 }
+    ]);
+
+    res.json({
+      totalUsers,
+      totalLands,
+      totalValue: totalValue[0]?.total || 0,
+      totalTransactions,
+      verificationRate,
+      recentTransactions: formattedTransactions,
+      monthlyStats,
+      pendingVerifications: {
+        lands: await Land.countDocuments({ verificationStatus: "pending" }),
+        users: await Buyer.countDocuments({ isVerified: false }) + 
+               await Seller.countDocuments({ isVerified: false }),
+        purchases: await BuyRequest.countDocuments({ status: "pending" }),
+        transfers: await TransferRequest.countDocuments({ status: "pending" })
+      }
+    });
+
+  } catch (error) {
+    console.error("Error fetching dashboard statistics:", error);
+    res.status(500).json({ 
+      message: "Failed to fetch dashboard statistics",
+      error: error.message 
+    });
+  }
+});
+
+// Transaction Analytics API
+landRoute.get("/transaction-analytics", async (req, res) => {
+  try {
+    const analytics = await Payment.aggregate([
+      {
+        $facet: {
+          // Average transaction value
+          avgValue: [
+            { $group: { _id: null, avg: { $avg: "$amount" } } }
+          ],
+          // Price range distribution
+          priceRanges: [
+            {
+              $bucket: {
+                groupBy: "$amount",
+                boundaries: [0, 100000, 500000, 1000000, 5000000],
+                default: "5000000+",
+                output: { count: { $sum: 1 } }
+              }
+            }
+          ],
+          // Success rate
+          successRate: [
+            {
+              $group: {
+                _id: null,
+                total: { $sum: 1 },
+                successful: {
+                  $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] }
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]);
+
+    res.json(analytics);
+  } catch (error) {
+    console.error("Error fetching transaction analytics:", error);
+    res.status(500).json({ message: "Failed to fetch transaction analytics" });
+  }
+});
+
+// Location Analytics API
+landRoute.get("/location-analytics", async (req, res) => {
+  try {
+    const locationStats = await Land.aggregate([
+      {
+        $group: {
+          _id: "$location",
+          count: { $sum: 1 },
+          avgPrice: { $avg: "$price" },
+          totalArea: { $sum: "$area" },
+          lands: { $push: "$$ROOT" }
+        }
+      },
+      {
+        $project: {
+          location: "$_id",
+          count: 1,
+          avgPrice: 1,
+          totalArea: 1,
+          verifiedCount: {
+            $size: {
+              $filter: {
+                input: "$lands",
+                as: "land",
+                cond: { $eq: ["$$land.verificationStatus", "approved"] }
+              }
+            }
+          }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]);
+
+    res.json(locationStats);
+  } catch (error) {
+    console.error("Error fetching location analytics:", error);
+    res.status(500).json({ message: "Failed to fetch location analytics" });
+  }
+});
+
+// User Activity Analytics API
+landRoute.get("/user-activity", async (req, res) => {
+  try {
+    const [topBuyers, topSellers, userGrowth] = await Promise.all([
+      // Top buyers
+      BuyRequest.aggregate([
+        { 
+          $group: {
+            _id: "$buyerId",
+            transactions: { $sum: 1 },
+            totalSpent: { $sum: "$amount" }
+          }
+        },
+        { $sort: { transactions: -1 } },
+        { $limit: 5 },
+        {
+          $lookup: {
+            from: "buyers",
+            localField: "_id",
+            foreignField: "_id",
+            as: "buyerInfo"
+          }
+        }
+      ]),
+
+      // Top sellers
+      Land.aggregate([
+        {
+          $group: {
+            _id: "$userId",
+            listings: { $sum: 1 },
+            totalValue: { $sum: "$price" }
+          }
+        },
+        { $sort: { listings: -1 } },
+        { $limit: 5 },
+        {
+          $lookup: {
+            from: "sellers",
+            localField: "_id",
+            foreignField: "_id",
+            as: "sellerInfo"
+          }
+        }
+      ]),
+
+      // User growth over time
+      Promise.all([
+        Buyer.aggregate([
+          {
+            $group: {
+              _id: {
+                month: { $month: "$createdAt" },
+                year: { $year: "$createdAt" }
+              },
+              count: { $sum: 1 }
+            }
+          }
+        ]),
+        Seller.aggregate([
+          {
+            $group: {
+              _id: {
+                month: { $month: "$createdAt" },
+                year: { $year: "$createdAt" }
+              },
+              count: { $sum: 1 }
+            }
+          }
+        ])
+      ])
+    ]);
+
+    res.json({
+      topBuyers,
+      topSellers,
+      userGrowth: {
+        buyers: userGrowth[0],
+        sellers: userGrowth[1]
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching user activity:", error);
+    res.status(500).json({ message: "Failed to fetch user activity" });
+  }
+});
+
+// Performance Metrics API
+landRoute.get("/performance-metrics", async (req, res) => {
+  try {
+    const [verificationTimes, peakHours, successRates] = await Promise.all([
+      // Average verification time
+      Land.aggregate([
+        {
+          $match: {
+            verificationStatus: "approved",
+            "verifiedBy.timestamp": { $exists: true },
+            createdAt: { $exists: true }
+          }
+        },
+        {
+          $project: {
+            verificationTime: {
+              $subtract: ["$verifiedBy.timestamp", "$createdAt"]
+            }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            avgTime: { $avg: "$verificationTime" }
+          }
+        }
+      ]),
+
+      // Peak transaction hours
+      Payment.aggregate([
+        {
+          $group: {
+            _id: { $hour: "$createdAt" },
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { count: -1 } },
+        { $limit: 24 }
+      ]),
+
+      // Success rates for different processes
+      Promise.all([
+        // Land verification success rate
+        Land.aggregate([
+          {
+            $group: {
+              _id: null,
+              total: { $sum: 1 },
+              approved: {
+                $sum: { $cond: [{ $eq: ["$verificationStatus", "approved"] }, 1, 0] }
+              }
+            }
+          }
+        ]),
+        // Buy request success rate
+        BuyRequest.aggregate([
+          {
+            $group: {
+              _id: null,
+              total: { $sum: 1 },
+              completed: {
+                $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] }
+              }
+            }
+          }
+        ])
+      ])
+    ]);
+
+    res.json({
+      verificationMetrics: {
+        avgTime: verificationTimes[0]?.avgTime || 0,
+        peakHours,
+      },
+      successRates: {
+        landVerification: successRates[0][0] || { total: 0, approved: 0 },
+        buyRequests: successRates[1][0] || { total: 0, completed: 0 }
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching performance metrics:", error);
+    res.status(500).json({ message: "Failed to fetch performance metrics" });
+  }
+});
+
+// Add these new routes after your existing APIs
+
+// Get escrow payments for land inspector
+landRoute.get("/escrow-payments", async (req, res) => {
+  try {
+    const escrowPayments = await Payment.find({
+      paymentType: 'escrow',
+      status: 'inEscrow'
+    })
+    .populate('landId')
+    .populate('buyerId', 'name email phoneNumber walletAddress')
+    .populate('sellerId', 'name email phoneNumber walletAddress')
+    .sort('-createdAt')
+    .lean();
+
+    res.json(escrowPayments);
+  } catch (error) {
+    console.error("Error fetching escrow payments:", error);
+    res.status(500).json({ message: "Failed to fetch escrow payments" });
+  }
+});
+
+// Record escrow payment from buyer
+landRoute.post("/record-escrow-payment", async (req, res) => {
+  try {
+    const {
+      buyRequestId,
+      landId,
+      buyerId,
+      sellerId,
+      amount,
+      transactionHash,
+    } = req.body;
+
+    // Create payment record with escrow details
+    const payment = new Payment({
+      buyRequestId,
+      landId,
+      buyerId,
+      sellerId,
+      amount,
+      transactionHash,
+      paymentType: 'escrow',
+      status: 'inEscrow',
+      escrowDetails: {
+        receivedByInspector: {
+          status: true,
+          transactionHash,
+          timestamp: new Date()
+        }
+      }
+    });
+
+    await payment.save();
+
+    // Update buy request status
+    await BuyRequest.findByIdAndUpdate(buyRequestId, {
+      status: 'paymentInEscrow',
+      paymentStatus: 'inEscrow'
+    });
+
+    res.status(200).json({
+      message: "Escrow payment recorded successfully",
+      paymentId: payment._id
+    });
+  } catch (error) {
+    console.error("Error recording escrow payment:", error);
+    res.status(500).json({ message: "Failed to record escrow payment" });
+  }
+});
+
+// Release escrow payment to seller
+landRoute.post("/release-escrow/:paymentId", async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const { transactionHash, inspectorAddress } = req.body;
+
+    const payment = await Payment.findById(paymentId);
+    if (!payment) {
+      return res.status(404).json({ message: "Payment not found" });
+    }
+
+    if (payment.paymentType !== 'escrow') {
+      return res.status(400).json({ message: "This is not an escrow payment" });
+    }
+
+    // Update payment with release details
+    payment.status = 'completed';
+    payment.escrowDetails.releasedToSeller = {
+      status: true,
+      transactionHash,
+      timestamp: new Date(),
+      inspectorAddress
+    };
+
+    await payment.save();
+
+    // Update buy request status
+    await BuyRequest.findByIdAndUpdate(payment.buyRequestId, {
+      status: 'completed',
+      paymentStatus: 'completed'
+    });
+
+    // Update land ownership
+    await Land.findByIdAndUpdate(payment.landId, {
+      status: 'sold',
+      currentOwner: payment.buyerId,
+      previousOwner: payment.sellerId,
+      lastTransactionDate: new Date(),
+      lastTransactionHash: transactionHash
+    });
+
+    res.json({
+      message: "Payment released to seller successfully",
+      payment
+    });
+  } catch (error) {
+    console.error("Error releasing escrow payment:", error);
+    res.status(500).json({ message: "Failed to release escrow payment" });
+  }
+});
+
+// Get escrow payment details
+landRoute.get("/escrow-payment/:paymentId", async (req, res) => {
+  try {
+    const payment = await Payment.findById(req.params.paymentId)
+      .populate('landId')
+      .populate('buyerId', 'name email phoneNumber walletAddress')
+      .populate('sellerId', 'name email phoneNumber walletAddress')
+      .lean();
+
+    if (!payment) {
+      return res.status(404).json({ message: "Payment not found" });
+    }
+
+    res.json(payment);
+  } catch (error) {
+    console.error("Error fetching escrow payment details:", error);
+    res.status(500).json({ message: "Failed to fetch payment details" });
+  }
+});
+
+// Get pending escrow releases
+landRoute.get("/pending-escrow-releases", async (req, res) => {
+  try {
+    const pendingReleases = await Payment.find({
+      paymentType: 'escrow',
+      status: 'inEscrow',
+      'escrowDetails.receivedByInspector.status': true,
+      'escrowDetails.releasedToSeller.status': false
+    })
+    .populate('landId')
+    .populate('buyerId', 'name email phoneNumber walletAddress')
+    .populate('sellerId', 'name email phoneNumber walletAddress')
+    .sort('-escrowDetails.receivedByInspector.timestamp')
+    .lean();
+
+    res.json(pendingReleases);
+  } catch (error) {
+    console.error("Error fetching pending escrow releases:", error);
+    res.status(500).json({ message: "Failed to fetch pending releases" });
+  }
+});
+
 
 module.exports = landRoute;

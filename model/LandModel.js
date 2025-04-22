@@ -60,6 +60,27 @@ const landSchema = new mongoose.Schema(
       ref: "BuyRequest",
       default: null,
     },
+    transferDocumentHash: {
+      type: String,
+      sparse: true  // Allows null/undefined values
+    },
+    lastTransferDate: {
+      type: Date,
+      sparse: true
+    },
+    transferHistory: [{
+      documentHash: String,
+      transferDate: Date,
+      buyerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'buyer'
+      },
+      sellerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'seller'
+      },
+      transactionHash: String
+    }]
   },
   {
     collection: "land",
