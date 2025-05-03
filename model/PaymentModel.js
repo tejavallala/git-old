@@ -62,6 +62,24 @@ const paymentSchema = new mongoose.Schema(
     paymentDate: {
       type: Date,
       default: Date.now
+    },
+    nftDetails: {
+      tokenId: String,
+      transactionHash: String,
+      network: {
+        type: String,
+        enum: ['sepolia', 'mainnet'],
+        default: 'sepolia'
+      },
+      mintedAt: {
+        type: Date,
+        default: Date.now
+      },
+      metadata: {
+        name: String,
+        description: String,
+        imageUrl: String
+      }
     }
   },
   {

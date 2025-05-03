@@ -629,6 +629,9 @@ landRoute.get("/transfer-requests", async (req, res) => {
 
 // Process transfer request
 landRoute.post("/process-transfer/:requestId", async (req, res) => {
+  if (action === 'approve') {
+    transferRequest.completedAt = new Date(); // <-- Add this line
+  }
   try {
     const { requestId } = req.params;
     const { action, sellerPhoto, buyerPhoto, verificationDate, comments } = req.body;
@@ -772,8 +775,9 @@ landRoute.get("/completed-transfers", async (req, res) => {
       buyerVerificationPhoto: { $exists: true }
     })
     .populate('landId')
-    .populate('sellerId', 'name email phoneNumber')
-    .populate('buyerId', 'name email phoneNumber')
+    .populate('sellerId', 'name email phoneNumber governmentId')
+    .populate('buyerId', 'name email phoneNumber governmentId')
+    .populate('paymentId')
     .sort({ verificationDate: -1 })
     .lean();
 
@@ -1273,6 +1277,7 @@ landRoute.post("/release-escrow/:paymentId", async (req, res) => {
 landRoute.get("/escrow-payment/:paymentId", async (req, res) => {
   try {
     const payment = await Payment.findById(req.params.paymentId)
+    .populate('paymentId')
       .populate('landId')
       .populate('buyerId', 'name email phoneNumber walletAddress')
       .populate('sellerId', 'name email phoneNumber walletAddress')
