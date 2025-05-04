@@ -1316,5 +1316,135 @@ landRoute.get("/pending-escrow-releases", async (req, res) => {
   }
 });
 
+// Update land with NFT details after successful minting
+landRoute.post("/update-nft/:landId", async (req, res) => {
+  try {
+    const { landId } = req.params;
+    const { tokenId, transactionHash, network, metadata } = req.body;
 
+    // Validate required fields
+    if (!tokenId || !transactionHash) {
+      return res.status(400).json({ message: "TokenId and transactionHash are required" });
+    }
+
+    // Find the land document and update it with NFT details
+    const updatedLand = await Land.findByIdAndUpdate(
+      landId,
+      {
+        $set: {
+          nftDetails: {
+            tokenId,
+            transactionHash,
+            network: network || "sepolia",
+            mintedAt: new Date(),
+            metadata: {
+              ...metadata,
+              owner: metadata?.owner || {}
+            }
+          },
+          status: 'minted'
+        }
+      },
+      { 
+        new: true,
+        runValidators: true
+      }
+    );
+
+    if (!updatedLand) {
+      return res.status(404).json({ message: "Land not found" });
+    }
+
+    // Return the updated land document
+    res.status(200).json({
+      message: "NFT details updated successfully",
+      land: updatedLand
+    });
+
+  } catch (error) {
+    console.error("Error updating NFT details:", error);
+    res.status(500).json({ 
+      message: "Failed to update NFT details", 
+      error: error.message 
+    });
+  }
+});
+// Add this route to get land ownership history
+landRoute.get("/land-history/:landId", async (req, res) => {
+  try {
+    const { landId } = req.params;
+
+    // Find the land and populate owner details
+    const land = await Land.findById(landId)
+      .populate('userId', 'name email phoneNumber')
+      .populate('currentOwner', 'name email phoneNumber photoUrl')
+      .populate('previousOwner', 'name email phoneNumber')
+      .lean();
+
+    if (!land) {
+      return res.status(404).json({ message: "Land not found" });
+    }
+
+    // Get all transfer records for this land
+    const transfers = await TransferRequest.find({ 
+      landId, 
+      status: 'completed' 
+    })
+    .populate('buyerId', 'name email phoneNumber')
+    .populate('sellerId', 'name email phoneNumber photoUrl')
+    .populate('paymentId', 'amount transactionHash createdAt')
+    .sort({ completedAt: 1 }) // Sort by transfer completion date
+    .lean();
+
+    // Format the response
+    const historyData = {
+      // Land details
+      surveyNumber: land.surveyNumber,
+      location: land.location,
+      area: land.area,
+      
+      // Current owner
+      currentOwner: {
+        name: land.currentOwner?.name || 'N/A',
+        contact: land.currentOwner?.phoneNumber || 'N/A',
+        since: land.lastTransactionDate || land.createdAt,
+        photoUrl: land.currentOwner?.photoUrl || null,
+      },
+
+      // Original owner
+      originalOwner: {
+        name: land.userId?.name || 'N/A',
+        contact: land.userId?.phoneNumber || 'N/A',
+        registeredOn: land.createdAt
+      },
+
+      // Previous owners list
+      previousOwners: transfers.map(transfer => ({
+        name: transfer.sellerId?.name,
+        from: transfer.paymentId?.createdAt,
+        to: transfer.completedAt,
+        transferPrice: transfer.paymentId?.amount,
+        transactionHash: transfer.transactionHash,
+        photoUrl: transfer.sellerId?.photoUrl || null,
+      })),
+
+      // NFT details if minted
+      nftDetails: land.nftDetails || null,
+
+      // Verification details
+      verificationStatus: land.verificationStatus,
+      verificationDate: land.verifiedBy?.timestamp,
+      inspectorComments: land.verificationComments
+    };
+
+    res.json(historyData);
+
+  } catch (error) {
+    console.error("Error fetching land history:", error);
+    res.status(500).json({ 
+      message: "Failed to fetch land history",
+      error: error.message 
+    });
+  }
+});
 module.exports = landRoute;

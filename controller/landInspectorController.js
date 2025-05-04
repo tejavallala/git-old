@@ -2,10 +2,22 @@ const express = require('express');
 const inspectorRoute = express.Router();
 const sellerModel = require('../model/sellerModel');
 const buyerModel = require('../model/buyerModel');
-const LandInspector = require('../model/landInspectorModel'); // Fixed import
-const bcrypt = require('bcrypt'); // Add this import
+const Payment = require('../model/PaymentModel');
 const BuyRequest = require('../model/BuyRequestModel');
 const Land = require('../model/LandModel');
+
+
+inspectorRoute.get('/minted', async (req, res) => {
+  try {
+    // Only NFTs with a tokenId are minted
+    const nfts = await Payment.find({ 'nftDetails.tokenId': { $exists: true, $ne: null } })
+      .populate('buyerId', 'name mobile govtId email') // assuming these fields exist in buyer model
+      .populate('landId', 'location area surveyNumber');
+    res.json(nfts);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch minted NFTs' });
+  }
+});
 
 // Get unverified users (either sellers or buyers)
 inspectorRoute.get('/unverified-users/:userType', async (req, res) => {

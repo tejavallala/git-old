@@ -75,10 +75,21 @@ const paymentSchema = new mongoose.Schema(
         type: Date,
         default: Date.now
       },
+      mintStatus: {
+        type: String,
+        enum: ['pending', 'processing', 'completed', 'failed'],
+        default: 'pending'
+      },
       metadata: {
         name: String,
         description: String,
-        imageUrl: String
+        imageUrl: String,
+        owner: {
+          name: String,
+          mobile: String,
+          govtId: String,
+          email: String
+        }
       }
     }
   },
